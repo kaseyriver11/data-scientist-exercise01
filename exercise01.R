@@ -1,33 +1,42 @@
 
 
-### Let's get started!
+### Let's get started! - Load in all neccessary packages 
 library(DBI)        # to connect to the database
 library(tidyr)      # to reshape data
-library(h2o)        # for random forest
+library(h2o)        # for random forest/neural network attempts
 library(xgboost)    # for xgboost
-library(caret)
+library(caret)      # for train() - which creates the standard logistic regression
+library(xgboost)    # for xgboost models
 
+
+### Let's begin by connection to the database and taking a look at the tables 
 # Establish a connection to the SQLite database
 connection <- dbConnect(RSQLite::SQLite(), dbname="exercise01.sqlite")
-# Vector of the different table name - 1 records table, and 8 reference tables
+# Vector of the different table names - 1 records table, 8 reference tables
 (tables <- dbListTables(connection))
 
-# Read the records - and take a quick look
+# Read the records table - and take a quick look
 records_db <- dbGetQuery(connection,'select * from records' )
 head(records_db)
 
 # Read refernece tables - and take a quick look
-# Note that the only possible ordinal variable is education - but it is not in order
+# Note that the only ordinal variable could be education - but it is not in order
+# This for loop prints out each reference table
 for(i in 1:length(tables)){
     if(tables[i] != "records"){
     print(dbGetQuery(connection, paste0('select * from ', tables[i])))}
 }
-# Or if you just want to look at one of them
+# if you just want to look at one of them
 (gender <- dbGetQuery(connection,'select * from sexes' ))
+### --- NOTE: Relationship was not listed in the data dictionary --- ###
+(relationship <- dbGetQuery(connection,'select * from relationships' ))
 
 
-### 2: Write a SQL query that creates a consolidated dataset from the normalized tables
-# Make one complete table - keeping all columns for now
+
+##### ----- Let us start to complete the tasks assigned ----- #####
+
+##### ----- 2: Write a SQL query that creates a consolidated dataset from the normalized tables
+# Make one complete table - keeping all columns for now ----- #####
 df <- dbGetQuery(connection, 
                 'select rc.*, cnt.name as Country,edu.name as Education_Level, 
                  ms.name as Marital_Status, job.name as Job, race.name as Race,
@@ -42,61 +51,100 @@ df <- dbGetQuery(connection,
                 left join sexes sx on rc.sex_id = sx.id
                 left join workclasses wc on rc.workclass_id = wc.id')
 
-### 3 - Export the flattened table to a CSV file. 
+
+
+##### ----- 3: Export the flattened table to a CSV file ----- #####
 # If we are in the working directory - we don't need to specify the file path
+# If you are not in the correct working directory - use setwd() 
 write.csv(df, "records.csv", row.names = FALSE)
 
-### 4 - Import the exported CSV
+
+
+##### ----- 4: Import the exported CSV ----- #####
 df <- read.csv("records.csv", sep = ",")
-
 # We don't need duplicate columns. Trim the dataset to only columns we will use
-records <- df[,c(1,2,11:23)]
+records <- df[,c(1,2,5,11:13, 15:23)]
 # Put the column "over_50k" at the end, it is the target variables. Remove country_id variable
-records <- subset(records, select=c(1:5,8:15,7))
-# Save for future reference - it may be needed!
+records <- subset(records, select=c(1:6,8:15,7))
+# Save the IDs for future call back. We cannot use them in a model, so we remove them
 ID <- records$id 
-records <- records[,2:14]
+records <- records[,2:15]
 
-### 5: Exploratory Analysis
 
+
+##### ----- 5: Exploratory Analysis ----- #####
 # ----- Target Variable ----- #
 table(records$over_50k)
 # ~ 76% are 0. We have a good split though. Lots of responces for both 0 and 1
 
 
 # ----- Continuous Variables (4 of these) ----- #
+### --- AGE --- ###
 summary(records$age)
+table(records$age)
 hist(records$age)
+table(records$age, records$over_50k)
 # Histogram looks fairly normal - minimum age of 17 might have been required for census
+# It is highly unlikely that there were 55 people who were 90 years old. There were only
+# 17 people between the ages of 85-89
 
-# capital_gain: a cont. var. representing post-social insurance income, in the form of capital gains.
+### --- Education Number: individual's current education level --- ###
+summary(records$education_num)
+table(records$education_num)
+hist(records$education_num)
+edunum <- as.data.frame.matrix(table(records$education_num, records$over_50k))
+edunum$percent <- edunum$'0'/(edunum$'0' + edunum$'1'); edunum
+
+### --- CAPITAL_GAIN & CAPITAL_LOSS --- ###
+# capital_gain: represents post-social insurance income, in the form of capital gains.
 table(records$capital_gain)
 # The maximum outside of 99,999 is 41,310. This variable may need to be transformed
 summary(records$capital_gain)
 hist(records$capital_gain[records$capital_gain > 0], breaks = 100)
+(gain <- as.data.frame.matrix(table(records$capital_gain, records$over_50k)))
+gain[gain$'0' == 0 & gain$'1' > 25,] # This people all make 50k+
+gain[gain$'0' > 25 & gain$'1' == 0,] # None of these people make 50k+
+
+# Are you telling me that every single person who had a capital gain of 5013 (117) 
+# made less than 50k,  but every person with a gain of 5178(146) made above 50k?? THIS IS FISHY
+# Also everyone with 99999 made 50k+
+# Also 410 people with 7688 and 364 people with 7298
+
 # Histogram - after a log transformation
 hist(log(records$capital_gain[records$capital_gain > 0]), breaks = 100)
 length(which(records$capital_gain > 0)) # only 4035 records > 0 
 
 # capital_loss: a cont. var. ... in the form of capital losses
-table(records$capital_loss)
-# This is a more reasonible table
+table(records$capital_loss) # This is a more reasonible table
 summary(records$capital_loss)
 hist(records$capital_loss)
 hist(records$capital_loss[records$capital_loss > 0], breaks = 100)
 length(which(records$capital_loss > 0)) # only 2282 records > 0 
+(loss <- as.data.frame.matrix(table(records$capital_loss, records$over_50k)))
+# Again more fishy thing. People with a loss of 1848, 1977, 1887, all made 50k+
+loss[loss$'0' == 0 & loss$'1' > 15,]  # This people all make 50k+
+loss[loss$'0' > 15 & loss$'1' == 0,]  # None of these people make 50k+
 
-#hours_week: Hours per week an individual worked
-summary(records$hours_week)
-hist(records$hours_week)
-table(records$hours_week)
+
+### --- Hours per week an indoividual work --- ###
+summary(records$hours_week) 
+hist(records$hours_week) 
+table(records$hours_week) 
 # There are a lot of people claiming to work > 60 hours in a week
-length(which(records$hours_week > 60))
+length(which(records$hours_week > 60)) 
+(hours <- as.data.frame.matrix(table(records$hours_week, records$over_50k)))
+hours$hours <- as.numeric(rownames(hours))
+hours$percent <- hours$'0'/(hours$'0' + hours$'1')
+# Finally a table that makes more sense, although most people with 60+ hours 
+# don't make 50k+
+hours[hours$hours>60,]
+
 
 ### - Recap on Continuous 
-sapply(records[,c(2:5)], mean)
-sapply(records[,c(2:5)], sd)
+sapply(records[,c(1:5)], mean) 
+sapply(records[,c(1:5)], sd) 
 
+rm(edunum, gain, hours, loss, relationship)
 
 
 # ----- Categorical Variables (8 of these) ----- #
@@ -112,19 +160,40 @@ for(i in 5:12){
 a <- as.data.frame(table(records[,c("Country")]))
 a$Percent <- round(a$Freq/48842,3)
 (a <- a[order(-a$Freq),])
+rm(a)
 
-# Note from each variables
-# Country - 90% USA, Mexico 2%, 2% missing, Top 5 countires make up 96% 
+makeNice <- function(column, dataframe){
+    tab10 <- as.data.frame.matrix(table(dataframe[,column], dataframe$over_50k))
+    tab10$percentUnder50 <- tab10$'0'/(tab10$'0' + tab10$'1')
+    tab10$OverallPercent <- round((tab10$'0' + tab10$'1')/dim(records)[1],3)
+    tab10 <- tab10[order(-tab10$OverallPercent),]
+    tab10
+}
+
+makeNice('Country', records)
+# Country - 90% USA, Mexico 2%, 2% missing, Top 5 countires make up 95% 
+makeNice('Education_Level', records)
 # Education_Level - 1/3 highschool grads, 38% come college or bachelors, only 6% PHD or Masters
+# Might want to consider using Education_Num, these are probably highly correlated
+makeNice('Marital_Status', records)
 # Marital_Status - almost 1/2 are married, 1/3 never married, 14% divorced
-# Job - 6 jobs with 10%+, 6% missing, Specialty highest at 13%
-# Race - 86% white, 10% black
+# married people are much more likely to make 50k+
+makeNice('Job', records)
+# Job - 6 jobs with 10%+, 6% missing, Specialty highest at 13% (also highest % making 50k+)
+makeNice('Race', records)
+# Race - 86% white, 10% black. Asians highest percent making 50k+
+makeNice('Relationship', records)
 # Relationship - 40% husband, 26% not in family, 16% own-child, 10% unmarried, 5% wife
+# Other - 97% make less than 50k
+makeNice('Sex', records)
 # Sex - 2/3 Male, 1/3 female
+makeNice('Work_Class', records)
 # Work_Class - ~ 70% private, 6% missing, 13% local/fed/state government
+# Those who don't work or are without pay don't make 50k+ (only 2)
 
 
-### 6: Split data into testing, training, and validation
+
+##### ----- 6: Split data into testing, training, and validation ----- #####
 
 # First - check is each column is the correct class
 lapply(records, class)
@@ -149,7 +218,7 @@ paste0("Validation:", table(validation$over_50k)[1]/
            (table(validation$over_50k)[1] + table(validation$over_50k)[2]))
 
 
-### 7: Develope a model
+##### ----- 7: Develope a model ----- #####
 # Let's start with the basics - we expect seperation warnings!
 logreg <- glm(over_50k ~ ., data = train, family = "binomial")
 
@@ -325,7 +394,7 @@ dtrain2 = xgb.DMatrix(as.matrix(tv3[,1:12]), label=tv3$over_50k)
 
 # List of all paramaters we will use
 xgb_params = list(
-    colsample_bytree = 0.5,
+    colsample_bytree = 0.4,
     subsample = 0.7,
     eta = 0.01,
     eval_metric = 'error',
@@ -341,11 +410,54 @@ res = xgb.cv(xgb_params,
             dtrain,
             nrounds=2000,
             nfold=4,
-            early_stopping_rounds=10,
-            print.every.n = 10)
-#,
-            #feval=xg_eval_mae,
-            #maximize=FALSE)
+            early_stopping_rounds=100,
+            print_every_n = 10)
+#
+
+### Grid Search Time
+best_cv_mean = Inf
+best_cv_mea_index = 0
+for (iter in 1:100) {
+    param <- list(colsample_bytree = runif(1, .4, .7),
+                  subsample = runif(1, .6, .9),
+                  eta = runif(1, .01, .15),
+                  eval_metric = 'error',
+                  objective = 'binary:logistic',
+                  max_depth = sample(6:12, 1),
+                  gamma = runif(1, 0.0, 0.2), 
+                  min_child_weight = 1
+    )
+    set.seed(1812)
+    # Cross validation parameters
+    res = xgb.cv(param,
+                 dtrain,
+                 nrounds=2000, # started at 750. Had to add more in order to lower ETA
+                 early_stopping_rounds=100,
+                 nfold = 4,
+                 print_every_n = 40)
+                 #early.stop.round = 10)
+    
+    best_nrounds = res$best_iteration
+    cv_mean <- res$evaluation_log$test_error_mean[best_nrounds]
+    
+    if (cv_mean < best_cv_mean) {
+        best_cv_mean = cv_mean
+        best_cv_mean_index = best_nrounds
+        best_param = param
+    }
+}
+
+# best_cv - .126334
+# best_nrounds - 173
+# best params:
+# colsample_bytree = .5
+# subsample = .7
+# eta = .05
+# eval_metric = 'error',
+# objective = 'binary:logistic',
+# max_depth = 10
+# gamma = .005
+# min_child_weight = 1
 
 
 
@@ -353,21 +465,21 @@ res = xgb.cv(xgb_params,
 
 
 
+#### Neural Net Time ####
+# My experience with neural networks has always been it takes the combination of several models to achieve a good error rate
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# dnn_model_1<-h2o.deeplearning(x=1:12, y=13,
+#                               model_id = "Dnn1",
+#                               training_frame=trainh2o, validation_frame = validh2o,
+#                               epochs=50, 
+#                               stopping_rounds=2,
+#                               overwrite_with_best_model=T,
+#                               activation="Rectifier",
+#                               distribution="AUTO",
+#                               keep_cross_validation_predictions = TRUE, # We like to see how we did!
+#                               hidden=c(150,150))
+# # Error: ~16%. - If we combined several of these models we could probably improve this slightly
+# dnn_model_1@model$validation_metrics
 
 
 
