@@ -7,9 +7,10 @@ library(h2o)        # for random forest/neural network attempts
 library(xgboost)    # for xgboost
 library(caret)      # for train() - which creates the standard logistic regression
 library(xgboost)    # for xgboost models
+library(e1071)      # required for train() to work
 
 
-### Let's begin by connection to the database and taking a look at the tables 
+### Let's begin by connecting to the database and taking a look at the tables 
 # Establish a connection to the SQLite database
 connection <- dbConnect(RSQLite::SQLite(), dbname="exercise01.sqlite")
 # Vector of the different table names - 1 records table, 8 reference tables
@@ -19,9 +20,9 @@ connection <- dbConnect(RSQLite::SQLite(), dbname="exercise01.sqlite")
 records_db <- dbGetQuery(connection,'select * from records' )
 head(records_db)
 
-# Read refernece tables - and take a quick look
-# Note that the only ordinal variable could be education - but it is not in order
-# This for loop prints out each reference table
+# Read reference tables - and take a quick look
+# Note that the only ordinal variable could be education level - but it is not in order
+# This for-loop prints out each reference table
 for(i in 1:length(tables)){
     if(tables[i] != "records"){
     print(dbGetQuery(connection, paste0('select * from ', tables[i])))}
@@ -41,15 +42,15 @@ df <- dbGetQuery(connection,
                 'select rc.*, cnt.name as Country,edu.name as Education_Level, 
                  ms.name as Marital_Status, job.name as Job, race.name as Race,
                  rel.name as Relationship, sx.name as Sex, wc.name as Work_Class
-                from records rc
-                left join Countries cnt on rc.country_id = cnt.id
-                left join education_levels edu on rc.education_level_id = edu.id
-                left join marital_statuses ms on rc.marital_status_id = ms.id
-                left join occupations job on rc.occupation_id = job.id
-                left join races race on rc.race_id = race.id
-                left join relationships rel on rc.relationship_id = rel.id
-                left join sexes sx on rc.sex_id = sx.id
-                left join workclasses wc on rc.workclass_id = wc.id')
+                 from records rc
+                 left join Countries cnt on rc.country_id = cnt.id
+                 left join education_levels edu on rc.education_level_id = edu.id
+                 left join marital_statuses ms on rc.marital_status_id = ms.id
+                 left join occupations job on rc.occupation_id = job.id
+                 left join races race on rc.race_id = race.id
+                 left join relationships rel on rc.relationship_id = rel.id
+                 left join sexes sx on rc.sex_id = sx.id
+                 left join workclasses wc on rc.workclass_id = wc.id')
 
 
 
@@ -69,7 +70,10 @@ records <- subset(records, select=c(1:6,8:15,7))
 # Save the IDs for future call back. We cannot use them in a model, so we remove them
 ID <- records$id 
 records <- records[,2:15]
-
+# One last bit of info, education number and education level appear to be the same variable
+table(records$education_num, records$Education_Level)
+# We will exclude education level going forward. Education number is a cleaner to read, ordinal variable
+records <- records[,c(1:6,8:14)]
 
 
 ##### ----- 5: Exploratory Analysis ----- #####
@@ -98,7 +102,7 @@ edunum$percent <- edunum$'0'/(edunum$'0' + edunum$'1'); edunum
 ### --- CAPITAL_GAIN & CAPITAL_LOSS --- ###
 # capital_gain: represents post-social insurance income, in the form of capital gains.
 table(records$capital_gain)
-# The maximum outside of 99,999 is 41,310. This variable may need to be transformed
+# The maximum outside of 99999 is 41310. This variable may need to be transformed
 summary(records$capital_gain)
 hist(records$capital_gain[records$capital_gain > 0], breaks = 100)
 (gain <- as.data.frame.matrix(table(records$capital_gain, records$over_50k)))
@@ -144,24 +148,11 @@ hours[hours$hours>60,]
 sapply(records[,c(1:5)], mean) 
 sapply(records[,c(1:5)], sd) 
 
-rm(edunum, gain, hours, loss, relationship)
+# Remove things are are no longer using!
+rm(edunum, gain, hours, loss, relationship, records_db, gender)
 
 
 # ----- Categorical Variables (8 of these) ----- #
-# View all table frequencies - sorted
-for(i in 5:12){
-    current_table <- as.data.frame(table(records[,i]))
-    colnames(current_table)[1] <- colnames(records)[i]
-    current_table <- current_table[order(-current_table$Freq),]
-    current_table$Percent <- round(current_table$Freq / 48842,3)
-    print(current_table)
-}
-# If you just want to view one table:
-a <- as.data.frame(table(records[,c("Country")]))
-a$Percent <- round(a$Freq/48842,3)
-(a <- a[order(-a$Freq),])
-rm(a)
-
 makeNice <- function(column, dataframe){
     tab10 <- as.data.frame.matrix(table(dataframe[,column], dataframe$over_50k))
     tab10$percentUnder50 <- tab10$'0'/(tab10$'0' + tab10$'1')
@@ -172,9 +163,8 @@ makeNice <- function(column, dataframe){
 
 makeNice('Country', records)
 # Country - 90% USA, Mexico 2%, 2% missing, Top 5 countires make up 95% 
-makeNice('Education_Level', records)
+# makeNice('Education_Level', records) - We are using education number instead
 # Education_Level - 1/3 highschool grads, 38% come college or bachelors, only 6% PHD or Masters
-# Might want to consider using Education_Num, these are probably highly correlated
 makeNice('Marital_Status', records)
 # Marital_Status - almost 1/2 are married, 1/3 never married, 14% divorced
 # married people are much more likely to make 50k+
@@ -205,9 +195,10 @@ lapply(records, class)
 
 # Split the data. Create 48,842 random numbers between 0 and 1.
 # Use this to create a 60,20,20 split
+set.seed(1812)
 split <- runif(48842,0,1) 
 train <- records[split < .6,]
-validation <- records[.6 < split & split < .8,]
+validation <- records[.6 <= split & split < .8,]
 test <- records[split >= .8,]
 # Did we get all records, and was it a successful split? - TRUE means yes!
 dim(train)[1] + dim(test)[1] + dim(validation)[1] == 48842
@@ -219,17 +210,19 @@ paste0("Validation:", table(validation$over_50k)[1]/
 
 
 ##### ----- 7: Develope a model ----- #####
-# Let's start with the basics - we expect seperation warnings!
+### --- Let's start with the basics --- ###
+### --- we expect seperation warnings --- ###
+# Looking at the tables above, we had major issues with perfect seperation in several variables
+# Now that we are only considering 60% of the data, we expect bigger issues
 logreg <- glm(over_50k ~ ., data = train, family = "binomial")
+pred <- predict(logreg, newdata=validation)
+pred <- ifelse(pred > .5, 1, 0)
+accuracy <- table(pred, validation[,"over_50k"])
+(glm_accuracy <- sum(diag(accuracy))/sum(accuracy))
+# About 84.5 Accuracy 
 
 # It was pretty obvious we would run into problems with perfect seperation. 
-# Where does it likely (because we will use records and not train) occur?
-table(train$Work_Class, train$over_50k) # ISSUE with Never-worked, and potentially Without-pay
-table(records$Country, records$over_50k) # ISSUE with multiple countries
-table(records$Education_Level, records$over_50k)# ISSUE with Preschool
-table(records$Marital_Status, records$over_50k) # We are oK!
-table(records$Job, records$over_50k) # POTENTIAL ISSUE - let's gamble for now
-table(records$Race, records$over_50k) # We are ok!
+# We will try to make some 'acceptible' corrections based on the tables previously explored
 
 # To fix Work-Class: Combine Never-worked and Without-pay into category: Other_Work_Class
 # This logically makes sense - we are combining to categories of people who shouldn't be making money
@@ -252,15 +245,17 @@ records2$Country <- ifelse(records2$Country %in% t$Country,
 table(records2$Country, records2$over_50k) # Issue Potentially Fixed
 records2$Country <- as.factor(records2$Country)
 
-# To fix Education_Level: Combine Preschool and 1st-4th to category: 4th_and_below
-# This logically makes sence - preschool and 1-4 are both 4th grade and below
-records2$Education_Level <- ifelse(records2$Education_Level %in%c("5th-6th", "1st-4th", "Preschool"), 
-                           "4th_and_below", as.character(records2$Education_Level))
-table(records2$Education_Level, records2$over_50k) # Issue Potentially Fixed
-records2$Education_Level <- as.factor(records2$Education_Level)
+# I had originally fixed the categorical variable education level. But when it was removed, I decided
+# to do the same for eduction number
+# This logically makes sence - preschool and 1-4 are both 4th grade and below (numbers 1 and 2)
+records2$education_num <- ifelse(records2$education_num %in%c(1,2), 
+                           2, records2$education_num)
+table(records2$education_num, records2$over_50k) # Issue Potentially Fixed
 
-##### We do not expect this to fix all of our problems, but rather limit the
-##### amount of times that it occurs. 
+### We do not expect this to fix all of our problems, but rather limit the
+### amount of times that it occurs. 
+### Note that perfect seperation is happening for our continuous variables as well
+### The problem is that they are so random, we can't bin them to fix the issue
 ## Also - note that perfect seperation isn't the end of the world
 ## If John is not working, we can be pretty confident he isn't making 50k+
 
@@ -268,8 +263,8 @@ records2$Education_Level <- as.factor(records2$Education_Level)
 # We have updated values, reset our train, validation, and testing datasets
 # We need a new train, validation, and testing dataset because we have binned columns
 train2 <- records2[split < .6,]
-validation2 <- records2[.6 < split & split < .8,]
-test2 <- records2[split >= .9,]
+validation2 <- records2[.6 <= split & split < .8,]
+test2 <- records2[split >= .8,]
 
 
 # Let's restart with the basics
@@ -278,7 +273,12 @@ mod <- train(over_50k ~ .,  data=train2, method="glm", family="binomial")
 pred <- predict(mod, newdata=validation2)
 accuracy <- table(pred, validation2[,"over_50k"])
 sum(diag(accuracy))/sum(accuracy)
-# Need to beat 84.8% Classification
+# Need to beat 85.2% Classification
+# Grab predictions for test data
+final_glm <- predict(mod, newdata=test2)
+accuracy <- table(final_glm, test2[,"over_50k"])
+sum(diag(accuracy))/sum(accuracy)
+# 84.7% accuracy
 
 # Just quickly note that removing any of the predictive variables, does not lower the AIC
 mod2 <- glm(over_50k ~ ., data=train2, family="binomial")
@@ -313,24 +313,10 @@ rf1 <- h2o.randomForest(training_frame = trainh2o,
                         score_each_iteration = T,
                         seed = 1812) 
 
-rf1@model$validation_metrics # 13.8% Error rate
+rf1@model$validation_metrics # 15.2% Error rate
 
-rf1 <- h2o.randomForest(training_frame = trainh2o, 
-                        validation_frame = validh2o,
-                        x=1:12,
-                        y=13, 
-                        model_id = "rf_v1", 
-                        ntrees = 200, #  random forest model. The default is 50.
-                        stopping_rounds = 3, # Stop fitting new trees when the 2-tree
-                        #stopping_metric = "misclassification",
-                        max_depth = 20,  # This is default, and better than 15, or 30 (I tried)
-                        score_each_iteration = T,
-                        seed = 1813) 
-
-rf1@model$validation_metrics
-
-
-
+final_rf1 <- as.vector(predict(rf1, testh2o)$predict)
+(rf_accuracy <- rf1@model$validation_metrics@metrics$max_criteria_and_metric_scores$value[4])
 
 ##### ----- Xgboost Turn ----- #####
 
@@ -347,7 +333,6 @@ rf1@model$validation_metrics
 # gbm2@model$cross_validation_metrics_summary
 # h2o.auc(h2o.performance(gbm2, xval = TRUE)) #.9241104 
 # ## Also not the error was ~14.5%
-# 
 # 
 # ## Lets try our hand at a more tuned model
 # gbm3 <- h2o.gbm(
@@ -371,12 +356,13 @@ rf1@model$validation_metrics
 
 
 ## Let's try using the package designed for specifically xgboost ##
-records3 <- records
-lapply(records3, class)
+records3 <- records 
+lapply(records3, class) 
 # xgboost package only excepts numbers - convert all factors and intergers to numeric
 for(i in 1:dim(records3)[2]){
     records3[,i] <- as.numeric(records[,i])
 }
+# Over_50k was turn into a variable containing 1 and 2. Change this to 0 and 1. 
 records3$over_50k <- records3$over_50k - 1
 # Resplit the data - We need new dataframes for train, validation, and testing because
 # we changed the data to be all numerical
@@ -389,9 +375,12 @@ tv3 <- rbind(train3, validation3)
 set.seed = 1812
 
 # Create a data matrix that xgboost can work with
-dtrain = xgb.DMatrix(as.matrix(train3[,1:12]), label=train3$over_50k)
+dtrain <- xgb.DMatrix(as.matrix(train3[,1:12]), label=train3$over_50k)
+dvalid <- xgb.DMatrix(as.matrix(validation3[,1:12]), label=validation3$over_50k)
+dtest  <- xgb.DMatrix(as.matrix(test3[,1:12]), label=test3$over_50k)
 dtrain2 = xgb.DMatrix(as.matrix(tv3[,1:12]), label=tv3$over_50k)  
 
+### After many grid searches - we have arrived at the following params ###
 # List of all paramaters we will use
 xgb_params = list(
     colsample_bytree = 0.4,
@@ -412,15 +401,16 @@ res = xgb.cv(xgb_params,
             nfold=4,
             early_stopping_rounds=100,
             print_every_n = 10)
-#
+# This will take about 1-2 minutes to run.
+# Error rate: 12.37% --- 87.62% accuracy 
 
-### Grid Search Time
+### Grid Search Time - After 100 iterations
 best_cv_mean = Inf
-best_cv_mea_index = 0
+best_cv_mean_index = 0
 for (iter in 1:100) {
     param <- list(colsample_bytree = runif(1, .4, .7),
                   subsample = runif(1, .6, .9),
-                  eta = runif(1, .01, .15),
+                  eta = .01,
                   eval_metric = 'error',
                   objective = 'binary:logistic',
                   max_depth = sample(6:12, 1),
@@ -446,22 +436,69 @@ for (iter in 1:100) {
         best_param = param
     }
 }
-
-# best_cv - .126334
-# best_nrounds - 173
+##### This was found to be the most accurate
+# best_cv - .1227
+# best_nrounds - 847
 # best params:
-# colsample_bytree = .5
-# subsample = .7
-# eta = .05
+# colsample_bytree = .59
+# subsample = .87
+# eta = .01
 # eval_metric = 'error',
 # objective = 'binary:logistic',
-# max_depth = 10
-# gamma = .005
+# max_depth = 6
+# gamma = .09
 # min_child_weight = 1
 
+# So rerun again, and save model this time. 
+param <- list(colsample_bytree = .593,
+              subsample = .874,
+              eta = .01,
+              eval_metric = 'error',
+              objective = 'binary:logistic',
+              max_depth = 6,
+              gamma = .091, 
+              min_child_weight = 1
+)
+set.seed(1812)
+# Cross validation parameters
+res = xgb.cv(param,
+             dtrain,
+             nrounds=2000, # started at 750. Had to add more in order to lower ETA
+             early_stopping_rounds=100,
+             nfold = 4,
+             print_every_n = 40)
+xgb_accuracy <- 1 - res$evaluation_log$test_error_mean[res$best_iteratio]
+res$best_iteration # this tells us how far to go in the final model building
+#### NICE: .1223 for error
+
+# Now we want to retrain with all the training data (not doing cross validation)
+# CV was used to pick parameters
+# We use best_iteration/.8 because we have more data this time, this will go a few more rounds and help improve accurary
+xgbModel <- xgb.train(param, dtrain, res$best_iteration/.85) 
+
+# Validation Accuracy
+final <- predict(xgbModel,dvalid)
+final <- ifelse(final >.5,1,0)
+acc1 <- table(final, validation3[,"over_50k"])
+sum(diag(acc1))/sum(acc1)
+# Test Accuracy
+final_xgb <- predict(xgbModel,dtest)
+final_xgb <- ifelse(final_xgb >.5,1,0)
+acc1 <- table(final_xgb, test3[,"over_50k"])
+sum(diag(acc1))/sum(acc1)
+
+### What happens if we add more data to the model
+# xgbModel <- xgb.train(param, dtrain2, res$best_iteration) 
+# # Test Accuracy
+# final_xgb <- predict(xgbModel,dtest)
+# final_xgb <- ifelse(final_xgb >.5,1,0)
+# acc1 <- table(final_xgb, test3[,"over_50k"])
+# sum(diag(acc1))/sum(acc1)
 
 
 
+
+### Let's see if ensembling improves our accuracy any!
 
 
 
@@ -481,6 +518,32 @@ for (iter in 1:100) {
 # # Error: ~16%. - If we combined several of these models we could probably improve this slightly
 # dnn_model_1@model$validation_metrics
 
+length(final_rf1); length(final_xgb); length(final_glm)
+
+final_ens <- as.numeric(final_rf1) + final_xgb + as.numeric(final_glm) - 1 
+# we subtract one because glm is 1's and 2's
+ens <- ifelse(final_ens > 1,1,0)
+final_acc <- table(ens, test3[,"over_50k"])
+sum(diag(acc1))/sum(acc1)
+
+
+a <- cbind(test, final_xgb)
+a$correct <- ifelse(a$over_50k == a$final_xgb,1,0)
+
+
+
+### Where did we do a good job of predicting 50k+
+makeTable <- function(column, dataframe){
+    tab10 <- as.data.frame.matrix(table(dataframe[,column], dataframe$correct))
+    tab10$Accuracy <- round(tab10$'1'/(tab10$'1' + tab10$'0'),3)
+    tab10$Percent0 <- 
+    tab10 <- tab10[order(-tab10$Accuracy),]
+    tab10
+}
+for(i in 1:12){
+    col <- colnames(records)[i]
+    print(makeTable(col, a))
+}
 
 
 
