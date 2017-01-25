@@ -109,6 +109,7 @@ hist(records$capital_gain[records$capital_gain > 0], breaks = 100)
 gain[gain$'0' == 0 & gain$'1' > 25,] # This people all make 50k+
 gain[gain$'0' > 25 & gain$'1' == 0,] # None of these people make 50k+
 
+
 # Are you telling me that every single person who had a capital gain of 5013 (117) 
 # made less than 50k,  but every person with a gain of 5178(146) made above 50k?? THIS IS FISHY
 # Also everyone with 99999 made 50k+
@@ -130,7 +131,7 @@ loss[loss$'0' == 0 & loss$'1' > 15,]  # This people all make 50k+
 loss[loss$'0' > 15 & loss$'1' == 0,]  # None of these people make 50k+
 
 
-### --- Hours per week an indoividual work --- ###
+### --- Hours per week an individual work --- ###
 summary(records$hours_week) 
 hist(records$hours_week) 
 table(records$hours_week) 
@@ -397,7 +398,7 @@ xgb_params = list(
 # Create the model!
 res = xgb.cv(xgb_params,
             dtrain,
-            nrounds=2000,
+            nrounds=15000,
             nfold=4,
             early_stopping_rounds=100,
             print_every_n = 10)
@@ -463,18 +464,18 @@ set.seed(1812)
 # Cross validation parameters
 res = xgb.cv(param,
              dtrain,
-             nrounds=2000, # started at 750. Had to add more in order to lower ETA
+             nrounds=1200, # started at 750. Had to add more in order to lower ETA
              early_stopping_rounds=100,
              nfold = 4,
              print_every_n = 40)
-xgb_accuracy <- 1 - res$evaluation_log$test_error_mean[res$best_iteratio]
-res$best_iteration # this tells us how far to go in the final model building
+(best <- which(res$test.error.mean == min(res$test.error.mean))[1]) # this tells us how far to go in the final model building
+(xgb_accuracy <- 1 - res$test.error.mean[best])
 #### NICE: .1223 for error
 
 # Now we want to retrain with all the training data (not doing cross validation)
 # CV was used to pick parameters
 # We use best_iteration/.8 because we have more data this time, this will go a few more rounds and help improve accurary
-xgbModel <- xgb.train(param, dtrain, res$best_iteration/.85) 
+xgbModel <- xgb.train(param, dtrain, best/.85) 
 
 # Validation Accuracy
 final <- predict(xgbModel,dvalid)
@@ -546,12 +547,23 @@ for(i in 1:12){
 }
 
 
-
-
+##model <- xgb.dump(xgbModel, with.stats = T)
+##dfnames <- dimnames(data.matrix(records[,-1]))[[2]]
+##(importance <- xgb.importance(dfnames, model = xgbModel))
+# Plot the importance
+##xgb.plot.importance(importance[1:10,])
+##(test <- chisq.test(train$Relationship, train$over_50k))
 
 
 ### Important Chart's
 imp <- as.data.frame(h2o.varimp(rf1))
-plot(imp$variable,imp$scaled_importance)
+imp
+
+(a <- table(records$Relationship, records$over_50k))
+View(a)
+
+
+
+
 
 
