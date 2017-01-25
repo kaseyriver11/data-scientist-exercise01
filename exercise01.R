@@ -550,6 +550,8 @@ for(i in 1:12){
 
 
 
-
+### Important Chart's
+imp <- as.data.frame(h2o.varimp(rf1))
+plot(imp$variable,imp$scaled_importance)
 
 
